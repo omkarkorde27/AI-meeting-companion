@@ -6,7 +6,22 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize Socket.IO connection for dashboard
     let socket;
     if (isDashboardPage) {
+        console.log("Dashboard page detected, initializing Socket.IO");
         socket = io();
+        
+        // Add more debug listeners
+        socket.on('connect', function() {
+            console.log('Socket.IO Connected');
+        });
+        
+        socket.on('error', function(data) {
+            console.error('Socket.IO Error:', data);
+        });
+        
+        socket.on('disconnect', function() {
+            console.log('Socket.IO Disconnected');
+        });
+        
         initializeDashboard(socket);
     }
     

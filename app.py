@@ -6,14 +6,10 @@ import json
 import uuid
 from dotenv import load_dotenv
 import threading
-import nltk
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('vader_lexicon')
 
 # Import services
 from services.transcription_service import transcription_service
-from services.suumarization_service import summarization_service
+from services.summarization_service import summarization_service
 from services.action_items_service import action_items_service
 from services.sentiment_service import sentiment_service
 from config import current_config as config
@@ -44,11 +40,18 @@ def dashboard():
 @app.route('/api/upload', methods=['POST'])
 def upload_audio():
     """Handle audio file uploads."""
+    print("Upload request received")
+    print(f"Request files: {request.files}")
+    
     if 'file' not in request.files:
+        print("Error: No file part in the request")
         return jsonify({'error': 'No file part'}), 400
     
     file = request.files['file']
+    print(f"File received: {file.filename}")
+    
     if file.filename == '':
+        print("Error: Empty filename")
         return jsonify({'error': 'No selected file'}), 400
     
     # Check if the file extension is allowed
@@ -226,16 +229,24 @@ def handle_stop_stream(data):
 @socketio.on('process_file')
 def handle_process_file(data):
     """Handle a request to process an uploaded file."""
+    print(f"Process file request received: {data}")
+    
     if 'filename' not in data:
+        print("Error: No filename provided in the request")
         emit('error', {'message': 'No filename provided'})
         return
     
     filename = data['filename']
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     
+    print(f"Looking for file at: {filepath}")
+    
     if not os.path.exists(filepath):
-        emit('error', {'message': 'File not found'})
+        print(f"Error: File not found at {filepath}")
+        emit('error', {'message': f'File not found at {filepath}'})
         return
+        
+    print(f"File found, proceeding with processing: {filepath}")
     
     # Create a new session for this file
     session_id = str(uuid.uuid4())
@@ -268,7 +279,12 @@ def process_audio_file(session_id, filepath):
         session_id (str): Session ID
         filepath (str): Path to the audio file
     """
+    print(f"Starting to process file: {filepath} for session: {session_id}")
     try:
+        # Debug: Check if file exists
+        if not os.path.exists(filepath):
+            print(f"ERROR: File not found at {filepath}")
+            return
         # Update session status
         sessions[session_id]['status'] = 'transcribing'
         sessions[session_id]['progress'] = 10

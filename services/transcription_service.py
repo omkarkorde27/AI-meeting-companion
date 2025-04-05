@@ -32,6 +32,13 @@ class TranscriptionService:
             dict: Transcription result with text and metadata
         """
         logger.info(f"Transcribing file: {file_path}")
+        print(f"DEBUG: Attempting to transcribe file: {file_path}")
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            logger.error(f"File not found: {file_path}")
+            print(f"ERROR: File not found at {file_path}")
+            return {'error': 'File not found', 'status': 'error'}
         
         # Determine the file extension
         file_ext = os.path.splitext(file_path)[1].lower()
