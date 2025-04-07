@@ -69,7 +69,7 @@ class TranscriptionService:
                     text = self.recognizer.recognize_sphinx(audio_data)
                 else:
                     # Default to Google's API
-                    text = self.recognizer.recognize_google(audio_data)
+                    text = self.recognizer.recognize_sphinx(audio_data)
                 
                 logger.info("Transcription completed successfully")
                 
