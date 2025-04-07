@@ -4,13 +4,14 @@ import speech_recognition as sr
 from pydub import AudioSegment
 import tempfile
 from config import current_config as config
+from openai import OpenAI
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class TranscriptionService:
-    """Service for transcribing audio to text."""
+    """Service for transcribing audio to text using OpenAI's Whisper"""
     
     def __init__(self, model=None):
         """Initialize the transcription service.
@@ -19,7 +20,7 @@ class TranscriptionService:
             model (str, optional): Model to use for transcription. Defaults to None.
         """
         self.model = model or config.TRANSCRIPTION_MODEL
-        self.recognizer = sr.Recognizer()
+        self.client = OpenAI(api_key=config.OPENAI_API_KEY)
         logger.info(f"Initialized transcription service with model: {self.model}")
     
     def transcribe_file(self, file_path):
@@ -44,56 +45,46 @@ class TranscriptionService:
         file_ext = os.path.splitext(file_path)[1].lower()
         
         try:
-            # Convert non-WAV files to WAV
-            if file_ext != '.wav':
-                logger.info(f"Converting {file_ext} to WAV for processing")
+            # Convert non-supported files to MP3 format which is well supported by Whisper
+            if file_ext not in ['.mp3', '.mp4', '.mpeg', '.mpga', '.m4a', '.wav', '.webm']:
+                logger.info(f"Converting {file_ext} to MP3 for processing")
                 audio = AudioSegment.from_file(file_path)
                 
-                # Create a temporary WAV file
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+                # Create a temporary MP3 file
+                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
                     temp_path = temp_file.name
                 
-                audio.export(temp_path, format='wav')
+                audio.export(temp_path, format='mp3')
                 audio_path = temp_path
             else:
                 audio_path = file_path
+
+            whisper_model = self._get_whisper_model()
             
             # Perform transcription
-            with sr.AudioFile(audio_path) as source:
-                audio_data = self.recognizer.record(source)
-                
-                # Choose the recognition method based on the model
-                if self.model == 'google':
-                    text = self.recognizer.recognize_google(audio_data)
-                elif self.model == 'sphinx':
-                    text = self.recognizer.recognize_sphinx(audio_data)
-                else:
-                    # Default to Google's API
-                    text = self.recognizer.recognize_sphinx(audio_data)
+            with open(audio_path, "rb") as audio_file:
+                response = self.client.audio.transcriptions.create(
+                    model=whisper_model,
+                    file=audio_file,
+                    response_format="text"
+                )
                 
                 logger.info("Transcription completed successfully")
                 
                 # Clean up temporary file if created
-                if file_ext != '.wav' and 'temp_path' in locals():
+                if file_ext not in ['.mp3', '.mp4', '.mpeg', '.mpga', '.m4a', '.wav', '.webm'] and 'temp_path' in locals():
                     os.unlink(temp_path)
                 
                 return {
-                    'text': text,
+                    'text': response,
                     'status': 'success',
-                    'model': self.model
+                    'model': whisper_model
                 }
                 
-        except sr.UnknownValueError:
-            logger.error("Speech recognition could not understand audio")
-            return {'error': 'Speech recognition could not understand audio', 'status': 'error'}
-            
-        except sr.RequestError as e:
-            logger.error(f"Could not request results from service: {e}")
-            return {'error': f'Could not request results from service: {e}', 'status': 'error'}
-            
         except Exception as e:
             logger.error(f"Error transcribing audio: {e}")
             return {'error': f'Error transcribing audio: {e}', 'status': 'error'}
+    
     
     def transcribe_chunk(self, audio_chunk):
         """Transcribe a chunk of audio data.
@@ -112,7 +103,7 @@ class TranscriptionService:
         
         try:
             # Save chunk to temporary file
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
                 temp_file.write(audio_chunk)
                 temp_path = temp_file.name
             
@@ -128,5 +119,20 @@ class TranscriptionService:
             logger.error(f"Error transcribing audio chunk: {e}")
             return {'error': f'Error transcribing audio chunk: {e}', 'status': 'error'}
 
+    def _get_whisper_model(self):
+        """Get the appropriate Whisper model based on configuration.
+        
+        Returns:
+            str: Whisper model name
+        """
+        # Map configuration model settings to Whisper model names
+        model_mapping = {
+            'whisper-small': 'whisper-1',   # Use the latest Whisper model
+            'whisper-medium': 'whisper-1',  # OpenAI API currently only exposes one model
+            'whisper-large': 'whisper-1',   # but we keep the mapping for future options
+            'default': 'whisper-1'
+        }
+
+        return model_mapping.get(self.model, 'whisper-1')
 # Create a default instance
 transcription_service = TranscriptionService()

@@ -22,7 +22,7 @@ class Config:
     HUGGINGFACE_API_KEY = os.getenv('HUGGINGFACE_API_KEY')
     
     # Model settings
-    TRANSCRIPTION_MODEL = os.getenv('TRANSCRIPTION_MODEL', 'default')
+    TRANSCRIPTION_MODEL = os.getenv('TRANSCRIPTION_MODEL', 'whisper-small')
     SUMMARIZATION_MODEL = os.getenv('SUMMARIZATION_MODEL', 'default')
     SENTIMENT_MODEL = os.getenv('SENTIMENT_MODEL', 'default')
 
@@ -52,6 +52,7 @@ class ProductionConfig(Config):
         
         # Additional production-specific initialization
         assert os.getenv('SECRET_KEY'), "SECRET_KEY environment variable is required in production"
+        assert os.getenv('OPENAI_API_KEY'), "OPENAI_API_KEY environment variable is required in production"
 
 
 # Configuration dictionary
