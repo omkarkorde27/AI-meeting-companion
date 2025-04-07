@@ -57,6 +57,59 @@ def upload_audio():
     # Check if the file extension is allowed
     extension = os.path.splitext(file.filename)[1].lower()[1:]
     if extension not in app.config['ALLOWED_EXTENSIONS']:
+        print(f"Error: File type not allowed - {extension}")
+        return jsonify({'error': f'File type not allowed. Allowed types: {", ".join(app.config["ALLOWED_EXTENSIONS"])}'})
+    
+    # Save the file with original filename (without unique prefix)
+    # This matches the filename that appears in the URL
+    filename = file.filename
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    
+    # Ensure the upload directory exists
+    upload_dir = app.config['UPLOAD_FOLDER']
+    print(f"Making sure upload directory exists: {upload_dir}")
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    # Save the file
+    print(f"Saving file to: {filepath}")
+    file.save(filepath)
+    
+    # Verify file was saved successfully
+    if os.path.exists(filepath):
+        print(f"File saved successfully at {filepath}")
+    else:
+        print(f"ERROR: File not saved at {filepath}")
+        return jsonify({'error': 'Failed to save file'}), 500
+    
+    # Create a new session for this file
+    session_id = str(uuid.uuid4())
+    sessions[session_id] = {
+        'filepath': filepath,
+        'filename': filename,
+        'status': 'processing',
+        'transcript': '',
+        'summary': None,
+        'action_items': None,
+        'sentiment': None
+    }
+    
+    # Start processing in a background thread to avoid blocking
+    processing_thread = threading.Thread(
+        target=process_audio_file,
+        args=(session_id, filepath)
+    )
+    processing_thread.daemon = True
+    processing_thread.start()
+    
+    return jsonify({
+        'message': 'File uploaded successfully',
+        'filename': filename,
+        'session_id': session_id
+    })
+    
+    # Check if the file extension is allowed
+    extension = os.path.splitext(file.filename)[1].lower()[1:]
+    if extension not in app.config['ALLOWED_EXTENSIONS']:
         return jsonify({'error': f'File type not allowed. Allowed types: {", ".join(app.config["ALLOWED_EXTENSIONS"])}'})
     
     # Generate a unique filename to avoid conflicts

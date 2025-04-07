@@ -86,7 +86,15 @@ function initializeDashboard(socket) {
     // Get URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     const mode = urlParams.get('mode');
-    const filename = urlParams.get('file');
+    let filename = urlParams.get('file');
+    
+    console.log(`Dashboard initialized with mode: ${mode}, file: ${filename}`);
+    
+    // If filename contains URL encoding, decode it
+    if (filename && filename.includes('%')) {
+        filename = decodeURIComponent(filename);
+        console.log(`Decoded filename: ${filename}`);
+    }
     
     // UI Elements
     const startBtn = document.getElementById('start-recording');
@@ -268,8 +276,38 @@ function initializeDashboard(socket) {
         statusIndicator.innerHTML = '<span class="badge bg-info">Processing</span>';
         transcript.innerHTML = '<p class="text-center">Processing uploaded file...</p>';
         
+        console.log(`Processing uploaded file: ${filename}`);
+        
         // Request processing of the uploaded file
         socket.emit('process_file', { filename: filename });
+        
+        // Set up socket listeners for updates if not already done
+        setupSocketListeners();
+    }
+    
+    /**
+     * Set up socket event listeners for updates
+     */
+    function setupSocketListeners() {
+        // Listen for error messages
+        socket.on('error', function(data) {
+            console.error('Socket Error:', data);
+            statusIndicator.innerHTML = `<span class="badge bg-danger">Error: ${data.message}</span>`;
+            transcript.innerHTML = `<p class="text-center text-danger">Error: ${data.message}</p>`;
+        });
+        
+        // Listen for status updates
+        socket.on('status_update', function(data) {
+            console.log('Status update:', data);
+            if (data.status === 'error') {
+                statusIndicator.innerHTML = `<span class="badge bg-danger">Error</span>`;
+                transcript.innerHTML = `<p class="text-center text-danger">Error: ${data.error}</p>`;
+            } else {
+                statusIndicator.innerHTML = `<span class="badge bg-info">${data.status}</span>`;
+            }
+        });
+        
+        // Other listeners are already set up in the original code
     }
     
     /**
