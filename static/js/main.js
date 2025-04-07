@@ -7,7 +7,10 @@ document.addEventListener('DOMContentLoaded', function() {
     let socket;
     if (isDashboardPage) {
         console.log("Dashboard page detected, initializing Socket.IO");
-        socket = io();
+        socket = io({
+            pingTimeout: 60000,  // Increase ping timeout
+            pingInterval: 25000  // Increase ping interval
+        });
         
         // Add more debug listeners
         socket.on('connect', function() {
@@ -83,6 +86,10 @@ function handleFileUpload(event) {
  * Initialize the dashboard functionality
  */
 function initializeDashboard(socket) {
+
+    // Add at the top of initializeDashboard function
+    console.log('Socket object:', socket);
+    console.log('Socket handlers:', socket._callbacks);
     // Get URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     const mode = urlParams.get('mode');
@@ -284,11 +291,58 @@ function initializeDashboard(socket) {
         // Set up socket listeners for updates if not already done
         setupSocketListeners();
     }
+
+    // Add this after your loadUploadedFile function
+    function pollForResults(filename) {
+        console.log("Starting to poll for results");
+        
+        // Poll every 3 seconds
+        const pollInterval = setInterval(() => {
+            console.log("Polling for results...");
+            
+            // Make an API request to get the session results by filename
+            fetch('/api/results')
+                .then(response => response.json())
+                .then(data => {
+                    console.log("Polled data:", data);
+                    
+                    if (data.transcript && data.status === 'completed') {
+                        // We have results, update the UI
+                        updateTranscript({text: data.transcript});
+                        updateSummary(data.summary);
+                        updateActionItems(data.action_items);
+                        updateSentimentChart(data.sentiment);
+                        
+                        // Stop polling
+                        clearInterval(pollInterval);
+                    }
+                })
+                .catch(error => {
+                    console.error("Error polling for results:", error);
+                });
+        }, 3000);
+        
+        // Stop polling after 2 minutes
+        setTimeout(() => {
+            clearInterval(pollInterval);
+            console.log("Stopped polling for results");
+        }, 120000);
+    }
     
     /**
      * Set up socket event listeners for updates
      */
     function setupSocketListeners() {
+        // Add this in the setupSocketListeners function
+        socket.on('transcription_complete', function(data) {
+            console.log('Transcription complete event received:', data);
+            // Check if data contains text or transcript property
+            if (data.transcript) {
+                updateTranscript({text: data.transcript});
+            } else if (data.text) {
+                updateTranscript({text: data.text});
+            }
+        });
         // Listen for error messages
         socket.on('error', function(data) {
             console.error('Socket Error:', data);

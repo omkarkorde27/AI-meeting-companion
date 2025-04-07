@@ -20,7 +20,7 @@ load_dotenv()
 # Initialize Flask app
 app = Flask(__name__)
 app.config.from_object(config)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", ping_timeout=60, ping_interval=25)
 
 # Global storage for ongoing sessions
 sessions = {}
@@ -364,10 +364,13 @@ def process_audio_file(session_id, filepath):
         transcript = transcription_result['text']
         sessions[session_id]['transcript'] = transcript
         sessions[session_id]['progress'] = 40
+        # In process_audio_file function
+        print(f"Emitting transcription_complete with text: {transcript[:100]}...")
         socketio.emit('transcription_complete', {
             'session_id': session_id,
-            'transcript': transcript
+            'text': transcript
         })
+        print("Emission complete")
         
         # Generate summary
         sessions[session_id]['status'] = 'summarizing'
