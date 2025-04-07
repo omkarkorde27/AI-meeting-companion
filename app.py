@@ -6,6 +6,8 @@ import json
 import uuid
 from dotenv import load_dotenv
 import threading
+import nltk
+nltk.download('punkt_tab')
 
 # Import services
 from services.transcription_service import transcription_service
@@ -148,6 +150,18 @@ def upload_audio():
         'filename': file.filename,
         'session_id': session_id
     })
+
+@app.route('/api/sessions', methods=['GET'])
+def get_sessions():
+    """Get list of active sessions."""
+    session_list = []
+    for session_id, session_data in sessions.items():
+        session_list.append({
+            'id': session_id,
+            'filename': session_data.get('filename', ''),
+            'status': session_data.get('status', '')
+        })
+    return jsonify(session_list)
 
 @app.route('/api/status/<session_id>', methods=['GET'])
 def get_status(session_id):

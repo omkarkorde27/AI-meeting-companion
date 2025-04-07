@@ -69,7 +69,7 @@ function handleFileUpload(event) {
     .then(data => {
         console.log('Success:', data);
         // Redirect to dashboard with the uploaded file ID
-        window.location.href = `/dashboard?file=${data.filename}&mode=uploaded`;
+        window.location.href = `/dashboard?file=${data.filename}&mode=uploaded&session_id=${data.session_id}`;
     })
     .catch(error => {
         console.error('Error:', error);
@@ -83,19 +83,41 @@ function handleFileUpload(event) {
 }
 
 /**
+ * Get session ID by filename
+ */
+function getSessionIdByFilename(filename) {
+    // Poll for active sessions and find one with our filename
+    console.log(`Looking for session with filename: ${filename}`);
+    
+    return fetch('/api/sessions')
+        .then(response => response.json())
+        .then(data => {
+            const sessionId = data.find(session => session.filename === filename)?.id;
+            console.log(`Found session ID: ${sessionId} for file: ${filename}`);
+            return sessionId;
+        })
+        .catch(error => {
+            console.error("Error finding session:", error);
+            return null;
+        });
+}
+
+/**
  * Initialize the dashboard functionality
  */
 function initializeDashboard(socket) {
-
-    // Add at the top of initializeDashboard function
+    let transcriptionDisplayed = false;
+    // Add debugging
     console.log('Socket object:', socket);
     console.log('Socket handlers:', socket._callbacks);
+    
     // Get URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     const mode = urlParams.get('mode');
     let filename = urlParams.get('file');
+    let sessionId = urlParams.get('session_id');
     
-    console.log(`Dashboard initialized with mode: ${mode}, file: ${filename}`);
+    console.log(`Dashboard initialized with mode: ${mode}, file: ${filename}, session_id: ${sessionId}`);
     
     // If filename contains URL encoding, decode it
     if (filename && filename.includes('%')) {
@@ -116,7 +138,7 @@ function initializeDashboard(socket) {
     let audioChunks = [];
     let isRecording = false;
     
-    // Socket event handlers
+    // Register ALL event handlers at initialization
     socket.on('connect', () => {
         console.log('Connected to server');
     });
@@ -126,19 +148,49 @@ function initializeDashboard(socket) {
     });
     
     socket.on('transcription_update', (data) => {
+        console.log('Transcription update received:', data);
         updateTranscript(data);
     });
     
+    socket.on('transcription_complete', (data) => {
+        console.log('Transcription complete event received:', data);
+        // Check if data contains text or transcript property
+        if (data.transcript) {
+            updateTranscript({text: data.transcript});
+        } else if (data.text) {
+            updateTranscript({text: data.text});
+        }
+    });
+    
     socket.on('summary_update', (data) => {
+        console.log('Summary update received:', data);
         updateSummary(data);
     });
     
     socket.on('action_items_update', (data) => {
+        console.log('Action items update received:', data);
         updateActionItems(data);
     });
     
     socket.on('sentiment_update', (data) => {
+        console.log('Sentiment update received:', data);
         updateSentimentChart(data);
+    });
+    
+    socket.on('error', function(data) {
+        console.error('Socket Error:', data);
+        statusIndicator.innerHTML = `<span class="badge bg-danger">Error: ${data.message}</span>`;
+        transcript.innerHTML = `<p class="text-center text-danger">Error: ${data.message}</p>`;
+    });
+    
+    socket.on('status_update', function(data) {
+        console.log('Status update:', data);
+        if (data.status === 'error') {
+            statusIndicator.innerHTML = `<span class="badge bg-danger">Error</span>`;
+            transcript.innerHTML = `<p class="text-center text-danger">Error: ${data.error}</p>`;
+        } else {
+            statusIndicator.innerHTML = `<span class="badge bg-info">${data.status}</span>`;
+        }
     });
     
     // Initialize based on mode
@@ -147,7 +199,7 @@ function initializeDashboard(socket) {
         setupLiveRecording();
     } else if (mode === 'uploaded' && filename) {
         // Setup for uploaded file
-        loadUploadedFile(filename);
+        loadUploadedFile(filename, sessionId);
     }
     
     /**
@@ -278,42 +330,71 @@ function initializeDashboard(socket) {
     /**
      * Load and process an uploaded file
      */
-    function loadUploadedFile(filename) {
+    function loadUploadedFile(filename, sessionId) {
         // Update UI
         statusIndicator.innerHTML = '<span class="badge bg-info">Processing</span>';
         transcript.innerHTML = '<p class="text-center">Processing uploaded file...</p>';
         
-        console.log(`Processing uploaded file: ${filename}`);
+        console.log(`Processing uploaded file: ${filename} with session ID: ${sessionId}`);
         
         // Request processing of the uploaded file
         socket.emit('process_file', { filename: filename });
         
-        // Set up socket listeners for updates if not already done
-        setupSocketListeners();
+        // Start a timer to check if we've received a response after 8 seconds instead of 5
+        setTimeout(() => {
+            // If transcript is still showing processing message and we haven't displayed anything yet
+            if (transcript.textContent.includes('Processing') && !transcriptionDisplayed) {
+                console.log("No transcription received through socket, falling back to polling");
+                
+                if (sessionId) {
+                    // If we have a session ID, use it directly
+                    pollForResultsById(sessionId);
+                } else {
+                    // Otherwise try to find the session ID by filename
+                    pollForResults(filename);
+                }
+            }
+        }, 8000);
     }
 
-    // Add this after your loadUploadedFile function
-    function pollForResults(filename) {
-        console.log("Starting to poll for results");
+    /**
+     * Poll for results using session ID
+     */
+    function pollForResultsById(sessionId) {
+        console.log(`Starting to poll for results for session ID: ${sessionId}`);
         
         // Poll every 3 seconds
         const pollInterval = setInterval(() => {
-            console.log("Polling for results...");
+            console.log(`Polling for results for session: ${sessionId}`);
             
-            // Make an API request to get the session results by filename
-            fetch('/api/results')
+            // Make an API request to get the session results
+            fetch(`/api/results/${sessionId}`)
                 .then(response => response.json())
                 .then(data => {
                     console.log("Polled data:", data);
                     
-                    if (data.transcript && data.status === 'completed') {
-                        // We have results, update the UI
+                    if (data.transcript && !transcriptionDisplayed) {
+                        // Update transcript only if not already displayed
                         updateTranscript({text: data.transcript});
+                    }
+                    
+                    // Only update summary if it exists and has necessary properties
+                    if (data.summary && typeof data.summary === 'object') {
                         updateSummary(data.summary);
+                    }
+                    
+                    // Only update action items if they exist
+                    if (data.action_items && typeof data.action_items === 'object') {
                         updateActionItems(data.action_items);
+                    }
+                    
+                    // Only update sentiment if it exists
+                    if (data.sentiment && typeof data.sentiment === 'object') {
                         updateSentimentChart(data.sentiment);
-                        
-                        // Stop polling
+                    }
+                    
+                    // Stop polling if complete
+                    if (data.status === 'completed') {
                         clearInterval(pollInterval);
                     }
                 })
@@ -330,46 +411,36 @@ function initializeDashboard(socket) {
     }
     
     /**
-     * Set up socket event listeners for updates
+     * Poll for results using filename
      */
-    function setupSocketListeners() {
-        // Add this in the setupSocketListeners function
-        socket.on('transcription_complete', function(data) {
-            console.log('Transcription complete event received:', data);
-            // Check if data contains text or transcript property
-            if (data.transcript) {
-                updateTranscript({text: data.transcript});
-            } else if (data.text) {
-                updateTranscript({text: data.text});
-            }
-        });
-        // Listen for error messages
-        socket.on('error', function(data) {
-            console.error('Socket Error:', data);
-            statusIndicator.innerHTML = `<span class="badge bg-danger">Error: ${data.message}</span>`;
-            transcript.innerHTML = `<p class="text-center text-danger">Error: ${data.message}</p>`;
-        });
+    function pollForResults(filename) {
+        console.log("Starting to poll for results by filename");
         
-        // Listen for status updates
-        socket.on('status_update', function(data) {
-            console.log('Status update:', data);
-            if (data.status === 'error') {
-                statusIndicator.innerHTML = `<span class="badge bg-danger">Error</span>`;
-                transcript.innerHTML = `<p class="text-center text-danger">Error: ${data.error}</p>`;
-            } else {
-                statusIndicator.innerHTML = `<span class="badge bg-info">${data.status}</span>`;
+        // First get the session ID for this filename
+        getSessionIdByFilename(filename).then(sessionId => {
+            if (!sessionId) {
+                console.error("Couldn't find session ID for filename:", filename);
+                return;
             }
+            
+            // Now that we have the session ID, use it to poll
+            pollForResultsById(sessionId);
         });
-        
-        // Other listeners are already set up in the original code
     }
     
-    /**
-     * Update the transcript display
-     */
+    // Then modify the updateTranscript function
     function updateTranscript(data) {
+        console.log("updateTranscript called with data:", data);
+        
+        // Skip if we've already displayed this transcript
+        if (transcriptionDisplayed) {
+            console.log("Skipping duplicate transcript");
+            return;
+        }
+        
         // If this is the first update, clear the placeholder
         if (transcript.querySelector('.text-muted')) {
+            console.log("Clearing placeholder text");
             transcript.innerHTML = '';
         }
         
@@ -390,6 +461,9 @@ function initializeDashboard(socket) {
         
         // Add the entry to the transcript
         transcript.appendChild(entry);
+        
+        // Mark as displayed to prevent duplicates
+        transcriptionDisplayed = true;
         
         // Auto-scroll if enabled
         if (autoScroll.checked) {
