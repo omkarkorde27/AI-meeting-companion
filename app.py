@@ -300,6 +300,70 @@ def handle_audio_chunk(data):
         print(f"Error processing audio chunk: {e}")
         emit('error', {'message': f'Error processing audio chunk: {e}'})
 
+@socketio.on('manual_test')
+def handle_manual_test(data):
+    """Handle a manual test request for processing a transcript."""
+    print("Manual test request received")
+    
+    if 'session_id' not in data:
+        emit('error', {'message': 'No session ID provided'})
+        return
+    
+    if 'transcript' not in data or not data['transcript']:
+        emit('error', {'message': 'No transcript provided'})
+        return
+    
+    session_id = data['session_id']
+    transcript = data['transcript']
+    
+    # Create a session if it doesn't exist
+    if session_id not in sessions:
+        sessions[session_id] = {
+            'status': 'testing',
+            'transcript': transcript,
+            'summary': None,
+            'action_items': None,
+            'sentiment': None
+        }
+    else:
+        # Update existing session
+        sessions[session_id]['transcript'] = transcript
+    
+    # Acknowledge receipt
+    emit('status_update', {
+        'session_id': session_id,
+        'status': 'processing_test',
+        'progress': 50
+    })
+    
+    # Process the transcript
+    try:
+        # Extract action items
+        print("Extracting action items from test transcript")
+        action_items_result = action_items_service.extract_action_items(transcript)
+        
+        if action_items_result['status'] == 'success':
+            sessions[session_id]['action_items'] = action_items_result
+            print(f"Action items extracted: {len(action_items_result.get('items', []))}")
+            print(f"Action items: {action_items_result.get('items', [])}")
+            
+            # Emit directly to match frontend expectations
+            emit('action_items_update', action_items_result)
+        else:
+            print(f"Error extracting action items: {action_items_result.get('error')}")
+            emit('error', {'message': f"Error extracting action items: {action_items_result.get('error')}"})
+        
+        # Update status
+        emit('status_update', {
+            'session_id': session_id,
+            'status': 'test_completed',
+            'progress': 100
+        })
+    
+    except Exception as e:
+        print(f"Error in manual test: {e}")
+        emit('error', {'message': f'Error in manual test: {e}'})
+
 # Add this endpoint to your app.py to handle the chunk uploads
 @app.route('/api/chunk_upload', methods=['POST'])
 def upload_audio_chunk():
@@ -538,16 +602,14 @@ def process_audio_file(session_id, filepath):
             'status': 'extracting_actions',
             'progress': 70
         })
-        
+
         action_items_result = action_items_service.extract_action_items(transcript)
-        
+
         if action_items_result['status'] == 'success':
             sessions[session_id]['action_items'] = action_items_result
             sessions[session_id]['progress'] = 80
-            socketio.emit('action_items_update', {
-                'session_id': session_id,
-                'action_items': action_items_result
-            })
+            # Emit directly to match frontend expectations
+            socketio.emit('action_items_update', action_items_result)
         
         # Analyze sentiment
         sessions[session_id]['status'] = 'analyzing_sentiment'
@@ -634,14 +696,12 @@ def process_stream_results(session_id):
         })
         
         action_items_result = action_items_service.extract_action_items(transcript)
-        
+
         if action_items_result['status'] == 'success':
             sessions[session_id]['action_items'] = action_items_result
-            socketio.emit('action_items_update', {
-                'session_id': session_id,
-                'action_items': action_items_result
-            })
-        
+            # Emit directly to match frontend expectations
+            socketio.emit('action_items_update', action_items_result)
+                
         # Analyze sentiment
         sessions[session_id]['status'] = 'analyzing_sentiment'
         socketio.emit('status_update', {

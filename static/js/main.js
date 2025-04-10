@@ -35,6 +35,11 @@ document.addEventListener('DOMContentLoaded', function() {
             uploadForm.addEventListener('submit', handleFileUpload);
         }
     }
+    
+    // Add the test button after a short delay to ensure other elements are loaded
+    if (isDashboardPage) {
+        setTimeout(addTestButton, 1000);
+    }
 });
 
 /**
@@ -170,6 +175,14 @@ function initializeDashboard(socket) {
     
     socket.on('action_items_update', (data) => {
         console.log('Action items update received:', data);
+        console.log('Action items data type:', typeof data);
+        console.log('Action items has items property:', data.hasOwnProperty('items'));
+        
+        if (data.items) {
+            console.log('Number of action items:', data.items.length);
+            console.log('First action item:', data.items[0]);
+        }
+        
         updateActionItems(data);
     });
     
@@ -593,7 +606,11 @@ function initializeDashboard(socket) {
                     
                     // Only update action items if they exist
                     if (data.action_items && typeof data.action_items === 'object') {
-                        updateActionItems(data.action_items);
+                        // Fixed: Pass the action items with the expected format
+                        updateActionItems({
+                            items: data.action_items.items || [], 
+                            status: data.action_items.status
+                        });
                     }
                     
                     // Only update sentiment if it exists
@@ -636,9 +653,9 @@ function initializeDashboard(socket) {
         });
     }
     
-    // Focus on the updateTranscript function, which needs to be fixed
-
-    // Fix for the duplicate display issue
+    /**
+     * Update the transcript display
+     */
     function updateTranscript(data) {
         console.log("updateTranscript called with data:", data);
         
@@ -648,13 +665,18 @@ function initializeDashboard(socket) {
             return;
         }
         
+        // Set flag that we've displayed transcription
+        transcriptionDisplayed = true;
+        
         // Clear error messages if we get valid transcript data
         if (transcript.textContent.includes('Error:')) {
             transcript.innerHTML = '';
         }
         
         // If this is the first update, clear any placeholder
-        if (transcript.textContent === 'No transcript available yet.') {
+        if (transcript.textContent === 'No transcript available yet.' || 
+            transcript.textContent.includes('Processing') ||
+            transcript.textContent.includes('Transcript will appear here...')) {
             console.log("Clearing placeholder text");
             transcript.innerHTML = '';
         }
@@ -711,146 +733,273 @@ function initializeDashboard(socket) {
         if (data.tldr) {
             const tldr = document.createElement('div');
             tldr.className = 'mb-3';
-            tldr.innerHTML = `
-                <h6>TL;DR</h6>
-                <p>${data.tldr}</p>
+            tldr.innerHTML = `<h6>TL;DR</h6>
+            <p>${data.tldr}</p>
+        `;
+        summaryContent.appendChild(tldr);
+    }
+    
+    // Add key points
+    if (data.key_points && data.key_points.length > 0) {
+        const keyPoints = document.createElement('div');
+        keyPoints.className = 'mb-3';
+        keyPoints.innerHTML = `<h6>Key Points</h6>`;
+        
+        const pointsList = document.createElement('ul');
+        data.key_points.forEach(point => {
+            const li = document.createElement('li');
+            li.textContent = point;
+            pointsList.appendChild(li);
+        });
+        
+        keyPoints.appendChild(pointsList);
+        summaryContent.appendChild(keyPoints);
+    }
+    
+    // Add topics if available
+    if (data.topics && data.topics.length > 0) {
+        const topicsSection = document.createElement('div');
+        topicsSection.className = 'mb-3';
+        topicsSection.innerHTML = `<h6>Discussion Topics</h6>`;
+        
+        const topicsList = document.createElement('div');
+        data.topics.forEach((topic, index) => {
+            const topicDiv = document.createElement('div');
+            topicDiv.className = 'mb-2';
+            topicDiv.innerHTML = `
+                <strong>${index+1}. ${topic.title}</strong>
+                <p>${topic.summary}</p>
             `;
-            summaryContent.appendChild(tldr);
-        }
+            topicsList.appendChild(topicDiv);
+        });
         
-        // Add key points
-        if (data.key_points && data.key_points.length > 0) {
-            const keyPoints = document.createElement('div');
-            keyPoints.className = 'mb-3';
-            keyPoints.innerHTML = `<h6>Key Points</h6>`;
-            
-            const pointsList = document.createElement('ul');
-            data.key_points.forEach(point => {
-                const li = document.createElement('li');
-                li.textContent = point;
-                pointsList.appendChild(li);
-            });
-            
-            keyPoints.appendChild(pointsList);
-            summaryContent.appendChild(keyPoints);
-        }
-        
-        // Add topics if available
-        if (data.topics && data.topics.length > 0) {
-            const topicsSection = document.createElement('div');
-            topicsSection.className = 'mb-3';
-            topicsSection.innerHTML = `<h6>Discussion Topics</h6>`;
-            
-            const topicsList = document.createElement('div');
-            data.topics.forEach((topic, index) => {
-                const topicDiv = document.createElement('div');
-                topicDiv.className = 'mb-2';
-                topicDiv.innerHTML = `
-                    <strong>${index+1}. ${topic.title}</strong>
-                    <p>${topic.summary}</p>
-                `;
-                topicsList.appendChild(topicDiv);
-            });
-            
-            topicsSection.appendChild(topicsList);
-            summaryContent.appendChild(topicsSection);
-        }
+        topicsSection.appendChild(topicsList);
+        summaryContent.appendChild(topicsSection);
+    }
+}
+
+/**
+ * Update the action items list - FIXED VERSION
+ */
+function updateActionItems(data) {
+    console.log('Updating action items with data:', data);
+    const actionItemsList = document.getElementById('action-items-list');
+    
+    // Clear placeholder
+    actionItemsList.innerHTML = '';
+    
+    // Handle both direct data and nested data formats
+    let items = [];
+    if (data.items) {
+        // Direct data format from our fixed server response
+        items = data.items;
+    } else if (data.action_items && data.action_items.items) {
+        // Nested format from polling or original server response
+        items = data.action_items.items;
     }
     
-    /**
-     * Update the action items list
-     */
-    function updateActionItems(data) {
-        const actionItemsList = document.getElementById('action-items-list');
-        
-        // Clear placeholder
-        actionItemsList.innerHTML = '';
-        
-        if (data.items && data.items.length > 0) {
-            data.items.forEach(item => {
-                const li = document.createElement('li');
-                li.className = 'list-group-item action-item';
-                
-                // Create content with assignee and deadline if available
-                let content = `<div><strong>${item.task}</strong>`;
-                
-                if (item.assignee) {
-                    content += `<br><small>Assigned to: ${item.assignee}</small>`;
-                }
-                
-                content += '</div>';
-                
-                // Add deadline badge if available
-                if (item.deadline) {
-                    content += `<span class="badge bg-info">${item.deadline}</span>`;
-                }
-                
-                li.innerHTML = content;
-                actionItemsList.appendChild(li);
-            });
-        } else {
-            // No action items found
-            actionItemsList.innerHTML = '<li class="list-group-item text-center">No action items detected</li>';
-        }
+    if (items && items.length > 0) {
+        items.forEach(item => {
+            const li = document.createElement('li');
+            li.className = 'list-group-item action-item';
+            
+            // Create content with assignee and deadline if available
+            let content = `<div><strong>${item.task}</strong>`;
+            
+            if (item.assignee) {
+                content += `<br><small>Assigned to: ${item.assignee}</small>`;
+            }
+            
+            content += '</div>';
+            
+            // Add deadline badge if available
+            if (item.deadline) {
+                content += `<span class="badge bg-info">${item.deadline}</span>`;
+            }
+            
+            li.innerHTML = content;
+            actionItemsList.appendChild(li);
+        });
+    } else {
+        // No action items found
+        actionItemsList.innerHTML = '<li class="list-group-item text-center">No action items detected</li>';
+    }
+}
+
+/**
+ * Update the sentiment analysis chart
+ */
+function updateSentimentChart(data) {
+    const sentimentContainer = document.getElementById('sentiment-chart');
+    
+    // Clear placeholder
+    sentimentContainer.innerHTML = '';
+    
+    if (!data || !data.sentiments) {
+        sentimentContainer.innerHTML = '<p class="text-center">No sentiment data available</p>';
+        return;
     }
     
-    /**
-     * Update the sentiment analysis chart
-     */
-    function updateSentimentChart(data) {
-        const sentimentContainer = document.getElementById('sentiment-chart');
-        
-        // Clear placeholder
-        sentimentContainer.innerHTML = '';
-        
-        if (!data || !data.sentiments) {
-            sentimentContainer.innerHTML = '<p class="text-center">No sentiment data available</p>';
-            return;
-        }
-        
-        // Create canvas for Chart.js
-        const canvas = document.createElement('canvas');
-        canvas.id = 'sentiment-canvas';
-        sentimentContainer.appendChild(canvas);
-        
-        // Prepare data for Chart.js
-        const labels = data.sentiments.map(item => item.timestamp || item.segment);
-        const sentimentData = data.sentiments.map(item => item.score);
-        
-        // Create the chart
-        const ctx = canvas.getContext('2d');
-        new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'Sentiment Score',
-                    data: sentimentData,
-                    borderColor: 'rgb(75, 192, 192)',
-                    tension: 0.1,
-                    fill: false
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    y: {
-                        min: -1,
-                        max: 1,
-                        title: {
-                            display: true,
-                            text: 'Sentiment (Negative to Positive)'
-                        }
-                    },
-                    x: {
-                        title: {
-                            display: true,
-                            text: 'Time'
-                        }
+    // Create canvas for Chart.js
+    const canvas = document.createElement('canvas');
+    canvas.id = 'sentiment-canvas';
+    sentimentContainer.appendChild(canvas);
+    
+    // Prepare data for Chart.js
+    const labels = data.sentiments.map(item => item.timestamp || item.segment);
+    const sentimentData = data.sentiments.map(item => item.score);
+    
+    // Create the chart
+    const ctx = canvas.getContext('2d');
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Sentiment Score',
+                data: sentimentData,
+                borderColor: 'rgb(75, 192, 192)',
+                tension: 0.1,
+                fill: false
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    min: -1,
+                    max: 1,
+                    title: {
+                        display: true,
+                        text: 'Sentiment (Negative to Positive)'
+                    }
+                },
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Time'
                     }
                 }
             }
-        });
+        }
+    });
+}
+}
+
+/**
+* Add a test button to the dashboard UI
+*/
+function addTestButton() {
+// Only add on dashboard page
+if (window.location.pathname !== '/dashboard') return;
+
+// Create the button
+const buttonGroup = document.querySelector('.btn-group');
+if (buttonGroup) {
+    const testButton = document.createElement('button');
+    testButton.id = 'test-action-items';
+    testButton.className = 'btn btn-sm btn-outline-secondary';
+    testButton.innerHTML = '<i class="bi bi-bug me-1"></i>Test';
+    testButton.onclick = testActionItemExtraction;
+    
+    // Add the button to the UI
+    buttonGroup.appendChild(testButton);
+    console.log("Test button added to UI");
+}
+}
+
+/**
+* Test function for action item extraction
+*/
+function testActionItemExtraction() {
+// Sample meeting transcript with clear action items
+const testTranscript = `
+John: Thanks everyone for joining today's project update meeting.
+
+Sarah: I've been working on the frontend design. I'll finish the mockups by next Friday.
+
+John: Great, Sarah. Mark, can you review those designs when they're ready?
+
+Mark: Sure, I'll take care of it.
+
+John: We need to finalize the database schema by the end of the week.
+
+Lisa: I'll handle that. I'll send the schema document to everyone by Thursday.
+
+John: Perfect. Lisa is responsible for the backend API documentation as well.
+
+Mark: We should also schedule a meeting with the client next week.
+
+Sarah: I'll coordinate with them and send a calendar invite by tomorrow.
+
+John: One last thing - we need to prepare for the demo next month. Mark will lead that effort.
+
+Mark: Yes, I'll create a plan and share it with the team by Monday.
+
+John: Excellent. Thank you everyone!
+`;
+
+// Only run this on the dashboard page
+if (window.location.pathname === '/dashboard') {
+    // Get references to UI elements
+    const statusIndicator = document.getElementById('status-indicator');
+    const transcript = document.getElementById('transcript');
+    
+    // Update transcript display
+    if (transcript) {
+        transcript.innerHTML = `<div class="transcript-entry">${testTranscript.replace(/\n/g, '<br>')}</div>`;
+        console.log("Test transcript added to UI");
     }
-};
+    
+    // Create a session ID if one doesn't exist
+    if (!currentSessionId) {
+        currentSessionId = 'test-session-' + Date.now();
+    }
+    
+    // Simulate a completed transcription by sending to the server
+    console.log("Sending test transcript to server for action item extraction");
+    socket.emit('manual_test', {
+        session_id: currentSessionId,
+        transcript: testTranscript
+    });
+    
+    // Update status
+    if (statusIndicator) {
+        statusIndicator.innerHTML = '<span class="badge bg-info">Testing Action Items</span>';
+    }
+}
+}
+
+// Test function for manually testing the action items display
+setTimeout(function() {
+// Only run this if we're on the dashboard and the test parameter is in the URL
+if (window.location.pathname === '/dashboard' && window.location.search.includes('test=true')) {
+    console.log("Testing action items display...");
+    
+    // Create test action items
+    const testData = {
+        items: [
+            {
+                task: "Complete project documentation",
+                assignee: "John",
+                deadline: "Next Friday",
+                priority: "high",
+                status: "not_started"
+            },
+            {
+                task: "Schedule follow-up meeting",
+                assignee: "Sarah",
+                deadline: "EOD",
+                priority: "medium",
+                status: "not_started"
+            }
+        ],
+        status: 'success'
+    };
+    
+    // Try to update action items with test data
+    console.log("Updating action items with test data:");
+    updateActionItems(testData);
+}
+}, 5000);
