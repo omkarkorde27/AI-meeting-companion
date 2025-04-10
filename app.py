@@ -461,6 +461,8 @@ def handle_request_transcript(data):
 @socketio.on('stop_stream')
 def handle_stop_stream(data):
     """Handle the end of audio streaming."""
+    print(f"Stop stream request received: {data}")
+    
     if 'session_id' not in data:
         emit('error', {'message': 'No session ID provided'})
         return
@@ -473,6 +475,17 @@ def handle_stop_stream(data):
     # Update session status
     sessions[session_id]['status'] = 'processing'
     
+    # Emit processing started event
+    emit('processing_started', {'session_id': session_id})
+    
+    # Emit the complete transcript back to the client
+    if 'transcript' in sessions[session_id] and sessions[session_id]['transcript']:
+        emit('transcription_complete', {
+            'session_id': session_id,
+            'text': sessions[session_id]['transcript'],
+            'final': True
+        })
+    
     # Start processing in a background thread
     processing_thread = threading.Thread(
         target=process_stream_results,
@@ -480,9 +493,6 @@ def handle_stop_stream(data):
     )
     processing_thread.daemon = True
     processing_thread.start()
-    
-    # Notify client that processing has started
-    emit('processing_started', {'session_id': session_id})
 
 @socketio.on('process_file')
 def handle_process_file(data):
@@ -655,12 +665,14 @@ def process_stream_results(session_id):
     """
     try:
         if session_id not in sessions:
+            print(f"Error: Session {session_id} not found")
             return
         
         # Get the transcript from the session
         transcript = sessions[session_id]['transcript']
         
         if not transcript:
+            print(f"Error: No transcript generated for session {session_id}")
             sessions[session_id]['status'] = 'error'
             sessions[session_id]['error'] = 'No transcript generated'
             socketio.emit('status_update', {
@@ -669,6 +681,8 @@ def process_stream_results(session_id):
                 'error': 'No transcript generated'
             })
             return
+        
+        print(f"Processing stream results for session {session_id} with transcript length: {len(transcript)}")
         
         # Generate summary
         sessions[session_id]['status'] = 'summarizing'
@@ -682,10 +696,14 @@ def process_stream_results(session_id):
         
         if summary_result['status'] == 'success':
             sessions[session_id]['summary'] = summary_result
+            print(f"Summary generated for session {session_id}")
+            # Make sure to emit with session_id explicitly in the data
             socketio.emit('summary_update', {
                 'session_id': session_id,
                 'summary': summary_result
             })
+        else:
+            print(f"Summary generation failed for session {session_id}: {summary_result.get('error', 'Unknown error')}")
         
         # Extract action items
         sessions[session_id]['status'] = 'extracting_actions'
@@ -699,8 +717,15 @@ def process_stream_results(session_id):
 
         if action_items_result['status'] == 'success':
             sessions[session_id]['action_items'] = action_items_result
-            # Emit directly to match frontend expectations
-            socketio.emit('action_items_update', action_items_result)
+            print(f"Action items extracted for session {session_id}: {len(action_items_result.get('items', []))}")
+            # Explicitly include session_id in the emitted data
+            socketio.emit('action_items_update', {
+                'session_id': session_id,
+                'items': action_items_result.get('items', []),
+                'status': action_items_result['status']
+            })
+        else:
+            print(f"Action items extraction failed for session {session_id}: {action_items_result.get('error', 'Unknown error')}")
                 
         # Analyze sentiment
         sessions[session_id]['status'] = 'analyzing_sentiment'
@@ -714,10 +739,14 @@ def process_stream_results(session_id):
         
         if sentiment_result['status'] == 'success':
             sessions[session_id]['sentiment'] = sentiment_result
+            print(f"Sentiment analysis completed for session {session_id}")
+            # Explicitly include session_id in the emitted data
             socketio.emit('sentiment_update', {
                 'session_id': session_id,
                 'sentiment': sentiment_result
             })
+        else:
+            print(f"Sentiment analysis failed for session {session_id}: {sentiment_result.get('error', 'Unknown error')}")
         
         # Update session status
         sessions[session_id]['status'] = 'completed'
@@ -726,6 +755,8 @@ def process_stream_results(session_id):
             'status': 'completed',
             'progress': 100
         })
+        
+        print(f"Processing completed for session {session_id}")
         
     except Exception as e:
         print(f"Error processing stream results: {e}")
@@ -736,7 +767,7 @@ def process_stream_results(session_id):
             'status': 'error',
             'error': str(e)
         })
-
+        
 if __name__ == '__main__':
     # Ensure upload directory exists
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)

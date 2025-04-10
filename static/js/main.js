@@ -112,6 +112,62 @@ function getSessionIdByFilename(filename) {
  */
 function initializeDashboard(socket) {
     let transcriptionDisplayed = false;
+
+    socket.on('transcription_update', (data) => {
+        console.log('Transcription update received:', data);
+        // Set final to false for incremental updates
+        if (!data.hasOwnProperty('final')) {
+            data.final = false;
+        }
+        updateTranscript(data);
+    });
+    
+    socket.on('transcription_complete', (data) => {
+        console.log('Transcription complete event received:', data);
+        // Check if data contains text
+        if (data.text) {
+            // Mark as final transcript
+            updateTranscript({
+                text: data.text,
+                final: true,
+                session_id: data.session_id
+            });
+        }
+    });
+    
+    socket.on('summary_update', (data) => {
+        console.log('Summary update received:', data);
+        updateSummary(data.summary || data);
+    });
+    
+    socket.on('action_items_update', (data) => {
+        console.log('Action items update received:', data);
+        
+        // Ensure we have a properly structured object for updateActionItems
+        if (data.items) {
+            // Already in the right format
+            updateActionItems(data);
+        } else if (data.action_items && data.action_items.items) {
+            // Nested format
+            updateActionItems({
+                items: data.action_items.items,
+                status: data.action_items.status
+            });
+        } else {
+            console.error('Invalid action items data format:', data);
+        }
+    });
+    
+    socket.on('sentiment_update', (data) => {
+        console.log('Sentiment update received:', data);
+        updateSentimentChart(data.sentiment || data);
+    });
+    
+    socket.on('processing_started', (data) => {
+        console.log('Processing started:', data);
+        statusIndicator.innerHTML = '<span class="badge bg-info">Processing Results</span>';
+    });
+    
     // Add debugging
     console.log('Socket object:', socket);
     console.log('Socket handlers:', socket._callbacks);
@@ -451,6 +507,9 @@ function initializeDashboard(socket) {
     }
     
     // Update the stopRecording function to work with our new recorder
+    /**
+ * Stop recording and ensure proper processing of results
+ */
     function stopRecording() {
         if (mediaRecorder) {
             // Update UI first for responsive feel
@@ -462,17 +521,19 @@ function initializeDashboard(socket) {
             // Clear the transcript request interval
             if (transcriptRequestInterval) {
                 clearInterval(transcriptRequestInterval);
+                transcriptRequestInterval = null;
             }
             
-            // Tell server we're stopping
-            if (currentSessionId) {
-                console.log('Stopping stream with session ID:', currentSessionId);
-                socket.emit('stop_stream', { session_id: currentSessionId });
-            } else {
+            // Make sure we have a valid session ID
+            if (!currentSessionId) {
                 console.error('No session ID available for stop_stream event');
+                statusIndicator.innerHTML = '<span class="badge bg-danger">Error: No session ID</span>';
+                return;
             }
             
-            // Stop the recorder and upload the final chunk
+            console.log('Stopping stream with session ID:', currentSessionId);
+            
+            // Stop the recorder and get the final audio
             mediaRecorder.stop()
                 .then(response => {
                     if (response) return response.json();
@@ -481,43 +542,47 @@ function initializeDashboard(socket) {
                 .then(data => {
                     console.log('Final recording chunk processed:', data);
                     
-                    // Creating a complete recording file for the full session
-                    const formData = new FormData();
-                    const fileName = `full_recording_${Date.now()}.wav`;
-                    
-                    // Instead of using blob which might have issues, create a simple text file
-                    // that indicates the recording is done
-                    const completionMarker = new Blob(['Recording completed'], { type: 'text/plain' });
-                    formData.append('file', completionMarker, fileName);
-                    formData.append('session_id', currentSessionId || '');
-                    formData.append('is_complete', 'true');
-                    
-                    return fetch('/api/upload', {
-                        method: 'POST',
-                        body: formData
+                    // Now tell the server we're done recording and to start processing
+                    return new Promise((resolve) => {
+                        console.log('Emitting stop_stream event with session ID:', currentSessionId);
+                        
+                        // Set up one-time handler for processing_started event
+                        socket.once('processing_started', (data) => {
+                            console.log('Processing started event received:', data);
+                            resolve(data);
+                        });
+                        
+                        // Tell server to stop streaming and start processing
+                        socket.emit('stop_stream', { session_id: currentSessionId });
+                        
+                        // Set a timeout in case the server doesn't respond
+                        setTimeout(() => {
+                            if (!resolve.called) {
+                                console.warn('No processing_started event received, continuing anyway');
+                                resolve({ session_id: currentSessionId });
+                            }
+                        }, 5000);
                     });
                 })
-                .then(response => {
-                    if (response) return response.json();
-                    return null;
-                })
                 .then(data => {
-                    console.log('Recording completed:', data);
-                    statusIndicator.innerHTML = '<span class="badge bg-info">Completed</span>';
+                    console.log('Recording completed, processing started:', data);
+                    statusIndicator.innerHTML = '<span class="badge bg-info">Processing Results</span>';
                     
-                    // Store the new session ID 
-                    if (data && data.session_id) {
-                        sessionId = data.session_id;
-                        
-                        // Start polling for results with the new session ID
-                        setTimeout(() => {
-                            pollForResultsById(sessionId);
-                        }, 3000);
-                    }
+                    // Start polling for results with the session ID
+                    setTimeout(() => {
+                        pollForResultsById(currentSessionId);
+                    }, 2000);
                 })
                 .catch(error => {
                     console.error('Error finalizing recording:', error);
                     statusIndicator.innerHTML = '<span class="badge bg-danger">Error</span>';
+                    
+                    // Try polling anyway in case the audio was processed
+                    setTimeout(() => {
+                        if (currentSessionId) {
+                            pollForResultsById(currentSessionId);
+                        }
+                    }, 5000);
                 });
         }
     }
@@ -656,6 +721,9 @@ function initializeDashboard(socket) {
     /**
      * Update the transcript display
      */
+    /**
+ * Update the transcript display with deduplication logic
+ */
     function updateTranscript(data) {
         console.log("updateTranscript called with data:", data);
         
@@ -681,16 +749,46 @@ function initializeDashboard(socket) {
             transcript.innerHTML = '';
         }
         
-        // Get the existing transcript content
-        const existingText = transcript.textContent || '';
-        
         // Process the incoming text
         const newText = data.text.trim();
+        
+        // Check if transcript already has content and if this is a complete transcription update
+        // The complete update from 'transcription_complete' should replace the incremental updates
+        if (data.final === true || data.session_id) {
+            // This is a complete transcript, replace everything
+            const completeEntry = document.createElement('div');
+            completeEntry.className = 'transcript-entry';
+            completeEntry.textContent = newText;
+            
+            // Clear existing content and add the complete transcript
+            transcript.innerHTML = '';
+            transcript.appendChild(completeEntry);
+            
+            console.log("Updated with complete transcript");
+            return;
+        }
+        
+        // Get the existing transcript content
+        const existingText = transcript.textContent || '';
         
         // Check if this exact text already exists in the transcript
         if (existingText.includes(newText)) {
             console.log("Skipping duplicate text:", newText);
             return;
+        }
+        
+        // Check if this is part of an existing text (to avoid partial duplicates)
+        // This helps with streaming audio where we might get overlapping chunks
+        const existingParts = existingText.split(/\s+/).filter(Boolean);
+        const newParts = newText.split(/\s+/).filter(Boolean);
+        
+        // If the new text is just a few words, check if it's part of existing text
+        if (newParts.length < 5) {
+            const newJoined = newParts.join(' ');
+            if (existingText.includes(newJoined)) {
+                console.log("Skipping partial duplicate:", newJoined);
+                return;
+            }
         }
         
         // Create a new transcript entry
