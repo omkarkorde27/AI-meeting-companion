@@ -118,23 +118,22 @@ class ActionItemsService:
         5. Key decisions made during the meeting
 
         Guidelines for transcript analysis:
+        - Be very sensitive to any potential action items, even if they're implied or subtle
         - Pay special attention to verbal commitments ("I'll handle that", "I can do that by Friday")
         - Notice when tasks are assigned to others ("John, can you take care of this?", "Sarah should prepare the report")
         - Be aware of language that indicates consensus on future actions ("So we agree that...")
-        - Capture both explicit deadlines ("by next Tuesday") and implicit ones ("before the next meeting")
-        - Include the transcript snippet where the action item was mentioned
-        - Identify speakers correctly, even when the transcript format varies
-        - Distinguish between general discussion and actual commitments
-        - Note when meeting participants mention previous incomplete action items
-        - Pay close attention to meeting wrap-up sections where tasks are often summarized
+        - Identify statements about things that need to be done, even without explicit ownership
+        - Look for implicit deadlines like "soon", "ASAP", "next time", etc.
+        - For any discussion about future work, deliverables, or activities, consider it a potential action item
+        - Infer action items from context when they're not explicitly stated
+        - Treat "we need to", "we should", "let's", or similar phrases as action items even if no specific person is assigned
+        - When no specific assignee is mentioned, mark it as assigned to the team or unassigned
 
-        For the timestamp field, include the time marker from the transcript if available, or note the approximate position (beginning, middle, end of meeting).
+        Create action items generously - it's better to identify too many potential action items than to miss important ones.
 
-        For ambiguous mentions that might be action items but lack clarity on who/what/when, include these in the unresolved_mentions list.
+        For ambiguous mentions that might be action items but lack clarity on who/what/when, include these in the action items list with lower confidence scores.
 
-        For decisions, capture clear conclusions the group reached that don't require specific actions but represent important outcomes.
-
-        Analyze the following meeting transcript and extract all action items in the specified structured format.
+        Analyze the following meeting transcript and extract all action items, being particularly thorough and inclusive in your identification.
         """
         
         logger.info(f"Initialized action items extraction service with model: {self.model}")
@@ -312,13 +311,13 @@ class ActionItemsService:
             return self._rule_based_extraction(text)
     
     def _rule_based_extraction(self, text):
-        """Extract action items using rule-based approach.
+        """Extract action items using rule-based approach with enhanced sensitivity.
         
         Args:
             text (str): Text to analyze
             
         Returns:
-            dict: Dictionary with action items and related information
+            list: List of extracted action items
         """
         # Clean and tokenize text
         clean_text = re.sub(r'\s+', ' ', text).strip()
@@ -326,9 +325,46 @@ class ActionItemsService:
         
         action_items = []
         
-        for sentence in sentences:
-            # Check if the sentence contains an action item indicator
-            if any(phrase in sentence.lower() for phrase in self.action_phrases):
+        # Detect future-oriented language
+        future_indicators = ["will", "going to", "plan", "schedule", "next", "tomorrow", 
+                            "upcoming", "soon", "later", "this week", "next week"]
+        
+        for i, sentence in enumerate(sentences):
+            sentence_lower = sentence.lower()
+            
+            # Check for action item indicators with expanded sensitivity
+            is_action_item = False
+            
+            # 1. Check for explicit action phrases
+            if any(phrase in sentence_lower for phrase in self.action_phrases):
+                is_action_item = True
+                
+            # 2. Look for future-oriented language
+            elif any(indicator in sentence_lower for indicator in future_indicators):
+                is_action_item = True
+                
+            # 3. Check for sentences that start with verbs (imperative sentences)
+            elif re.match(r'^\s*[A-Z][a-z]+\s', sentence) and len(sentence.split()) > 3:
+                first_word = sentence.split()[0].lower()
+                if first_word in ["check", "update", "create", "make", "find", "review", 
+                                "send", "share", "write", "develop", "plan", "ensure", 
+                                "confirm", "coordinate", "follow", "prepare", "get"]:
+                    is_action_item = True
+            
+            # 4. Context-based detection (look at previous and next sentence)
+            elif i > 0 and i < len(sentences) - 1:
+                prev_sentence = sentences[i-1].lower()
+                next_sentence = sentences[i+1].lower() if i < len(sentences) - 1 else ""
+                
+                # If previous sentence mentioned action items, this might continue it
+                if any(phrase in prev_sentence for phrase in self.action_phrases):
+                    is_action_item = True
+                    
+                # If the sentence contains a name followed by a verb
+                elif re.search(r'\b[A-Z][a-z]+\b\s+(will|should|can|could|to)\b', sentence):
+                    is_action_item = True
+            
+            if is_action_item:
                 # Extract the basic task
                 task = sentence
                 
@@ -343,20 +379,19 @@ class ActionItemsService:
                     'task_description': task,
                     'assignee': assignee,
                     'deadline': deadline,
-                    'priority': TaskPriority.UNDEFINED.value if INSTRUCTOR_AVAILABLE else "undefined",
-                    'status': TaskStatus.NOT_STARTED.value if INSTRUCTOR_AVAILABLE else "not_started",
-                    'confidence': 0.7,  # Medium confidence for rule-based extraction
+                    'priority': "medium" if "important" in sentence_lower or "priority" in sentence_lower else "low",
+                    'status': "not_started",
+                    'confidence': 0.6 if assignee or deadline else 0.5,  # Higher confidence if we found assignee or deadline
                     'transcript_snippet': task
                 })
         
-        # Create result dict with similar structure to AI-powered result
         return {
             'action_items': action_items,
             'meeting_title': None,
             'meeting_date': None,
             'decisions': [],
             'participants': [],
-            'extraction_summary': f"Extracted {len(action_items)} action items using rule-based approach."
+            'extraction_summary': f"Extracted {len(action_items)} action items using enhanced rule-based approach."
         }
     
     def _extract_deadline(self, sentence):

@@ -3,6 +3,8 @@ import logging
 import speech_recognition as sr
 from pydub import AudioSegment
 import tempfile
+import subprocess
+import json
 from config import current_config as config
 from openai import OpenAI
 
@@ -41,13 +43,11 @@ class TranscriptionService:
             print(f"ERROR: File not found at {file_path}")
             return {'error': 'File not found', 'status': 'error'}
         
-        # Determine the file extension
-        file_ext = os.path.splitext(file_path)[1].lower()
-        
         try:
-            # Convert non-supported files to MP3 format which is well supported by Whisper
-            if file_ext not in ['.mp3', '.mp4', '.mpeg', '.mpga', '.m4a', '.wav', '.webm']:
-                logger.info(f"Converting {file_ext} to MP3 for processing")
+            # Always convert to MP3 format for better Whisper compatibility
+            logger.info(f"Converting audio to MP3 format for processing")
+            try:
+                # First attempt: Use pydub
                 audio = AudioSegment.from_file(file_path)
                 
                 # Create a temporary MP3 file
@@ -55,70 +55,144 @@ class TranscriptionService:
                     temp_path = temp_file.name
                 
                 audio.export(temp_path, format='mp3')
-                audio_path = temp_path
-            else:
-                audio_path = file_path
+                
+            except Exception as e:
+                logger.warning(f"Pydub conversion failed: {e}. Trying ffmpeg directly.")
+                
+                # Second attempt: Use ffmpeg directly
+                try:
+                    # Create a temporary MP3 file
+                    with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
+                        temp_path = temp_file.name
+                    
+                    # Run ffmpeg to convert the file
+                    ffmpeg_cmd = [
+                        'ffmpeg', '-i', file_path, 
+                        '-ac', '1',  # Convert to mono
+                        '-ar', '16000',  # 16kHz sample rate
+                        '-c:a', 'libmp3lame',  # MP3 codec
+                        '-q:a', '4',  # Quality setting
+                        temp_path
+                    ]
+                    
+                    result = subprocess.run(
+                        ffmpeg_cmd, 
+                        capture_output=True, 
+                        text=True
+                    )
+                    
+                    if result.returncode != 0:
+                        logger.error(f"FFmpeg conversion failed: {result.stderr}")
+                        # If conversion fails, try using the original file
+                        temp_path = file_path
+                    
+                except Exception as ffmpeg_error:
+                    logger.error(f"FFmpeg direct conversion failed: {ffmpeg_error}")
+                    # If all conversions fail, use the original file
+                    temp_path = file_path
+
+            # Verify the file exists
+            if not os.path.exists(temp_path):
+                logger.error(f"Converted file not found: {temp_path}")
+                return {'error': 'Converted file not found', 'status': 'error'}
+                
+            # Check file size - Whisper needs at least some content
+            file_size = os.path.getsize(temp_path)
+            if file_size < 100:  # Very small files are likely empty/corrupt
+                logger.warning(f"File too small ({file_size} bytes), possibly empty audio")
+                return {'error': 'Audio file too small or empty', 'status': 'error'}
 
             whisper_model = self._get_whisper_model()
             
             # Perform transcription
-            with open(audio_path, "rb") as audio_file:
-                response = self.client.audio.transcriptions.create(
-                    model=whisper_model,
-                    file=audio_file,
-                    response_format="text"
-                )
-                
-                logger.info("Transcription completed successfully")
-                
-                # Clean up temporary file if created
-                if file_ext not in ['.mp3', '.mp4', '.mpeg', '.mpga', '.m4a', '.wav', '.webm'] and 'temp_path' in locals():
-                    os.unlink(temp_path)
-                
-                return {
-                    'text': response,
-                    'status': 'success',
-                    'model': whisper_model
-                }
+            with open(temp_path, "rb") as audio_file:
+                try:
+                    response = self.client.audio.transcriptions.create(
+                        model=whisper_model,
+                        file=audio_file,
+                        response_format="text"
+                    )
+                    
+                    logger.info("Transcription completed successfully")
+                    
+                    # Clean up temporary file if created
+                    if temp_path != file_path and os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                    
+                    # Make sure we have text content
+                    text = response if response else ""
+                    
+                    return {
+                        'text': text,
+                        'status': 'success',
+                        'model': whisper_model
+                    }
+                except Exception as transcription_error:
+                    logger.error(f"Error in Whisper API call: {transcription_error}")
+                    
+                    # Try one more fallback - convert to WAV format
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as wav_temp:
+                            wav_path = wav_temp.name
+                        
+                        # Run ffmpeg to convert to WAV
+                        ffmpeg_cmd = [
+                            'ffmpeg', '-i', temp_path if temp_path != file_path else file_path,
+                            '-ac', '1',  # Convert to mono
+                            '-ar', '16000',  # 16kHz sample rate
+                            wav_path
+                        ]
+                        
+                        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+                        
+                        if result.returncode == 0:
+                            # Try Whisper API again with WAV
+                            with open(wav_path, "rb") as wav_file:
+                                response = self.client.audio.transcriptions.create(
+                                    model=whisper_model,
+                                    file=wav_file,
+                                    response_format="text"
+                                )
+                                
+                                logger.info("Transcription with WAV completed successfully")
+                                
+                                # Clean up temporary files
+                                if temp_path != file_path and os.path.exists(temp_path):
+                                    os.unlink(temp_path)
+                                if os.path.exists(wav_path):
+                                    os.unlink(wav_path)
+                                
+                                return {
+                                    'text': response if response else "",
+                                    'status': 'success',
+                                    'model': whisper_model
+                                }
+                        else:
+                            logger.error(f"WAV conversion failed: {result.stderr}")
+                            raise Exception(f"WAV conversion failed: {result.stderr}")
+                    
+                    except Exception as wav_error:
+                        logger.error(f"WAV fallback failed: {wav_error}")
+                        # Clean up temporary files
+                        if temp_path != file_path and os.path.exists(temp_path):
+                            os.unlink(temp_path)
+                        if 'wav_path' in locals() and os.path.exists(wav_path):
+                            os.unlink(wav_path)
+                        
+                        # Re-raise the original error
+                        raise transcription_error
                 
         except Exception as e:
             logger.error(f"Error transcribing audio: {e}")
+            
+            # Clean up any temporary files
+            if 'temp_path' in locals() and temp_path != file_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+            if 'wav_path' in locals() and os.path.exists(wav_path):
+                os.unlink(wav_path)
+                
             return {'error': f'Error transcribing audio: {e}', 'status': 'error'}
     
-    
-    def transcribe_chunk(self, audio_chunk):
-        """Transcribe a chunk of audio data.
-        
-        Args:
-            audio_chunk (bytes): Audio data chunk
-            
-        Returns:
-            dict: Transcription result with text and metadata
-        """
-        # This method would be used for real-time transcription
-        # For the basic implementation, we'll create a placeholder
-        # In a real implementation, you would use a streaming API
-        
-        logger.info("Processing audio chunk")
-        
-        try:
-            # Save chunk to temporary file
-            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
-                temp_file.write(audio_chunk)
-                temp_path = temp_file.name
-            
-            # Transcribe the temporary file
-            result = self.transcribe_file(temp_path)
-            
-            # Clean up
-            os.unlink(temp_path)
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error transcribing audio chunk: {e}")
-            return {'error': f'Error transcribing audio chunk: {e}', 'status': 'error'}
-
     def _get_whisper_model(self):
         """Get the appropriate Whisper model based on configuration.
         
@@ -134,5 +208,6 @@ class TranscriptionService:
         }
 
         return model_mapping.get(self.model, 'whisper-1')
+
 # Create a default instance
 transcription_service = TranscriptionService()

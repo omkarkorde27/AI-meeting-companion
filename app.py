@@ -6,6 +6,7 @@ import json
 import uuid
 from dotenv import load_dotenv
 import threading
+import tempfile
 import nltk
 nltk.download('punkt_tab')
 
@@ -230,7 +231,7 @@ def handle_start_stream(data):
 
 @socketio.on('audio_chunk')
 def handle_audio_chunk(data):
-    """Process incoming audio chunk during streaming."""
+    """Process incoming audio chunk during streaming with improved feedback."""
     if 'session_id' not in data:
         emit('error', {'message': 'No session ID provided'})
         return
@@ -240,32 +241,158 @@ def handle_audio_chunk(data):
         emit('error', {'message': 'Invalid session ID'})
         return
     
-    # Decode the base64 audio data
+    # Handle different formats of audio data
     try:
-        audio_data = base64.b64decode(data['audio'])
-        
-        # Store the audio chunk
-        sessions[session_id]['audio_chunks'].append(audio_data)
-        
-        # Process the audio chunk for transcription
-        result = transcription_service.transcribe_chunk(audio_data)
-        
-        if result['status'] == 'success':
-            # Update the transcript
-            sessions[session_id]['transcript'] += ' ' + result['text']
+        if 'audio' in data:
+            # Check if the audio is a base64 string or binary array
+            if isinstance(data['audio'], str):
+                # Decode the base64 audio data
+                audio_data = base64.b64decode(data['audio'])
+            elif isinstance(data['audio'], list):
+                # Convert array back to bytes
+                audio_data = bytes(data['audio'])
+            else:
+                emit('error', {'message': 'Unsupported audio data format'})
+                return
             
-            # Send the transcription update to the client
-            emit('transcription_update', {
-                'text': result['text'],
-                'final': False
-            })
+            # Store the audio chunk
+            sessions[session_id]['audio_chunks'].append(audio_data)
+            
+            # Process each chunk immediately for better real-time performance
+            # This might produce more partial results but gives better user feedback
+            result = transcription_service.transcribe_chunk(audio_data)
+            
+            if result['status'] == 'success' and result.get('text'):
+                # Update the transcript
+                text = result.get('text', '').strip()
+                if text:  # Only update if we got actual text
+                    sessions[session_id]['transcript'] += ' ' + text
+                    
+                    # Send the transcription update to the client
+                    emit('transcription_update', {
+                        'text': text,
+                        'final': False
+                    })
+            elif result['status'] == 'error':
+                # Log the error but don't necessarily send to client to avoid flooding
+                print(f"Error processing audio chunk: {result.get('error')}")
+                
+            # Additionally, if we have accumulated multiple chunks, process them together
+            # for better accuracy and send as a more complete update
+            if len(sessions[session_id]['audio_chunks']) % 5 == 0:  # Every 5 chunks
+                # Combine recent chunks for better transcription
+                recent_chunks = sessions[session_id]['audio_chunks'][-5:]
+                combined_chunks = b''.join(recent_chunks)
+                
+                combined_result = transcription_service.transcribe_chunk(combined_chunks)
+                
+                if combined_result['status'] == 'success' and combined_result.get('text'):
+                    # Send the combined transcription update
+                    emit('transcription_update', {
+                        'text': combined_result.get('text', ''),
+                        'final': False
+                    })
+                
         else:
-            # Send an error message
-            emit('error', {'message': result.get('error', 'Error processing audio chunk')})
+            emit('error', {'message': 'No audio data provided'})
     
     except Exception as e:
         print(f"Error processing audio chunk: {e}")
         emit('error', {'message': f'Error processing audio chunk: {e}'})
+
+# Add this endpoint to your app.py to handle the chunk uploads
+@app.route('/api/chunk_upload', methods=['POST'])
+def upload_audio_chunk():
+    """Handle audio chunk uploads from streaming."""
+    print("Audio chunk upload request received")
+    
+    if 'file' not in request.files:
+        print("Error: No file part in the request")
+        return jsonify({'error': 'No file part'}), 400
+    
+    file = request.files['file']
+    session_id = request.form.get('session_id', '')
+    
+    if not session_id:
+        print("Error: No session ID provided")
+        return jsonify({'error': 'No session ID provided'}), 400
+    
+    if file.filename == '':
+        print("Error: Empty filename")
+        return jsonify({'error': 'No selected file'}), 400
+    
+    # Check if session exists
+    if session_id not in sessions:
+        print(f"Error: Invalid session ID: {session_id}")
+        return jsonify({'error': 'Invalid session ID'}), 400
+    
+    # Create a temporary file to store the chunk
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp:
+        print(f"Saving chunk to temp file: {temp.name}")
+        file.save(temp.name)
+        temp_path = temp.name
+    
+    try:
+        # Process the chunk
+        result = transcription_service.transcribe_file(temp_path)
+        
+        # Clean up the temporary file
+        os.unlink(temp_path)
+        
+        if result['status'] == 'success':
+            # Update the transcript in the session
+            sessions[session_id]['transcript'] += ' ' + result.get('text', '')
+            
+            # Emit transcript update
+            socketio.emit('transcription_update', {
+                'session_id': session_id,
+                'text': result.get('text', ''),
+                'final': False
+            })
+            
+            return jsonify({
+                'status': 'success',
+                'text': result.get('text', '')
+            })
+        else:
+            print(f"Error processing chunk: {result.get('error')}")
+            return jsonify({
+                'status': 'error',
+                'error': result.get('error')
+            }), 400
+            
+    except Exception as e:
+        print(f"Error processing audio chunk: {e}")
+        # Clean up the temporary file
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        return jsonify({'error': f'Error processing audio chunk: {e}'}), 500
+
+
+# Add a new handler for specific transcription requests
+@socketio.on('request_current_transcript')
+def handle_request_transcript(data):
+    """Provide the current transcript on demand."""
+    if 'session_id' not in data:
+        emit('error', {'message': 'No session ID provided'})
+        return
+    
+    session_id = data['session_id']
+    if session_id not in sessions:
+        emit('error', {'message': 'Invalid session ID'})
+        return
+    
+    # Send the current full transcript
+    if 'transcript' in sessions[session_id] and sessions[session_id]['transcript']:
+        emit('transcription_complete', {
+            'session_id': session_id,
+            'text': sessions[session_id]['transcript']
+        })
+    else:
+        emit('transcription_update', {
+            'text': 'No transcript available yet.',
+            'final': False
+        })
 
 @socketio.on('stop_stream')
 def handle_stop_stream(data):
